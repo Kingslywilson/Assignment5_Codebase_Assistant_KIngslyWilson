@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
+import os
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_groq import ChatGroq
@@ -15,7 +16,10 @@ from retriever import CodeRetriever, RetrievedCode
 BASE_DIR = Path(__file__).resolve().parent
 PROMPTS_DIR = BASE_DIR / "prompts"
 
-DEFAULT_MODEL = "llama-3.3-70b-versatile"
+DEFAULT_MODEL = os.getenv(
+    "GROQ_MODEL",
+    "openai/gpt-oss-120b",
+)
 
 
 @dataclass
@@ -55,6 +59,43 @@ class CodeQAChain:
             "code_qa_prompt.txt"
         )
 
+    # ---------------------------------------------------------
+    # RETRIEVAL QUERY
+    # ---------------------------------------------------------
+
+    def _build_retrieval_query(self, query: str) -> str:
+        """
+        Build a retrieval query that can resolve conversational
+        follow-up questions such as:
+        "What file is that function defined in?"
+        """
+
+        query = query.strip()
+
+        if self.memory.turn_count <= 0:
+            return query
+
+        recent_turn = self.memory.turns[-1]
+
+        previous_user = recent_turn.user.strip()
+
+        # Keep previous assistant context bounded so that very long
+        # answers do not unnecessarily expand the retrieval query.
+        previous_assistant = recent_turn.assistant.strip()[:2000]
+
+        return (
+            "Previous user question:\n"
+            f"{previous_user}\n\n"
+            "Previous assistant answer:\n"
+            f"{previous_assistant}\n\n"
+            "Current question:\n"
+            f"{query}"
+        )
+
+    # ---------------------------------------------------------
+    # NORMAL QUESTION ANSWERING
+    # ---------------------------------------------------------
+
     def ask(self, query: str) -> QAResponse:
         """Answer a codebase question using retrieved context."""
 
@@ -63,12 +104,19 @@ class CodeQAChain:
         if not query:
             raise ValueError("Question cannot be empty.")
 
-        results, context = self.retriever.retrieve_context(query)
+        retrieval_query = self._build_retrieval_query(query)
+
+        results, context = self.retriever.retrieve_context(
+            retrieval_query
+        )
 
         if not results:
             answer = self.FALLBACK_MESSAGE
 
-            self.memory.add_turn(query, answer)
+            self.memory.add_turn(
+                query,
+                answer,
+            )
 
             return QAResponse(
                 answer=answer,
@@ -90,13 +138,20 @@ class CodeQAChain:
         if not answer.strip():
             answer = self.FALLBACK_MESSAGE
 
-        self.memory.add_turn(query, answer)
+        self.memory.add_turn(
+            query,
+            answer,
+        )
 
         return QAResponse(
             answer=answer,
             sources=results,
             query=query,
         )
+
+    # ---------------------------------------------------------
+    # SPECIALIZED QUESTIONS
+    # ---------------------------------------------------------
 
     def explain_code(self, query: str) -> QAResponse:
         """Explain source code using retrieved code context."""
@@ -134,12 +189,19 @@ class CodeQAChain:
         if not query:
             raise ValueError("Question cannot be empty.")
 
-        results, context = self.retriever.retrieve_context(query)
+        retrieval_query = self._build_retrieval_query(query)
+
+        results, context = self.retriever.retrieve_context(
+            retrieval_query
+        )
 
         if not results:
             answer = self.FALLBACK_MESSAGE
 
-            self.memory.add_turn(query, answer)
+            self.memory.add_turn(
+                query,
+                answer,
+            )
 
             return QAResponse(
                 answer=answer,
@@ -153,22 +215,33 @@ class CodeQAChain:
 
         user_prompt = f"""
 CONVERSATION HISTORY:
+
 {history}
 
 RETRIEVED CODE:
+
 {context}
 
 REQUEST:
+
 {query}
 
-Use the retrieved code as the only factual source.
+GROUNDING RULES:
 
-Do not invent information that is not supported by
-the retrieved source code.
+1. Use the retrieved code as the only factual source.
 
-If the evidence is insufficient, say:
+2. Do not invent files, functions, classes, APIs, dependencies,
+   execution paths, or behavior.
+
+3. Do not use outside knowledge as evidence about this project.
+
+4. If the retrieved code does not contain enough evidence,
+   respond with:
 
 "{self.FALLBACK_MESSAGE}"
+
+5. When describing a function or module, identify only files
+   and symbols actually present in the retrieved code.
 """
 
         messages = [
@@ -185,13 +258,20 @@ If the evidence is insufficient, say:
         if not answer.strip():
             answer = self.FALLBACK_MESSAGE
 
-        self.memory.add_turn(query, answer)
+        self.memory.add_turn(
+            query,
+            answer,
+        )
 
         return QAResponse(
             answer=answer,
             sources=results,
             query=query,
         )
+
+    # ---------------------------------------------------------
+    # STREAMING
+    # ---------------------------------------------------------
 
     def stream(self, query: str) -> Iterator[str]:
         """Stream a grounded answer from the Groq model."""
@@ -201,12 +281,19 @@ If the evidence is insufficient, say:
         if not query:
             raise ValueError("Question cannot be empty.")
 
-        results, context = self.retriever.retrieve_context(query)
+        retrieval_query = self._build_retrieval_query(query)
+
+        results, context = self.retriever.retrieve_context(
+            retrieval_query
+        )
 
         if not results:
             answer = self.FALLBACK_MESSAGE
 
-            self.memory.add_turn(query, answer)
+            self.memory.add_turn(
+                query,
+                answer,
+            )
 
             yield answer
             return
@@ -216,7 +303,7 @@ If the evidence is insufficient, say:
             context=context,
         )
 
-        collected = []
+        collected: list[str] = []
         last_chunk = None
 
         for chunk in self.llm.stream(messages):
@@ -228,6 +315,8 @@ If the evidence is insufficient, say:
                 collected.append(text)
                 yield text
 
+        # Some LangChain/Groq versions expose usage only on the
+        # final streamed chunk.
         if last_chunk is not None:
             self._record_usage(last_chunk)
 
@@ -241,6 +330,10 @@ If the evidence is insufficient, say:
             complete_answer,
         )
 
+    # ---------------------------------------------------------
+    # MESSAGE BUILDING
+    # ---------------------------------------------------------
+
     def _build_messages(
         self,
         query: str,
@@ -252,15 +345,19 @@ If the evidence is insufficient, say:
 
         user_prompt = f"""
 CONVERSATION HISTORY:
+
 {history}
 
 RETRIEVED CODE CONTEXT:
+
 {context}
 
 CURRENT QUESTION:
+
 {query}
 
 INSTRUCTIONS:
+
 Answer the current question using the retrieved
 code context as the factual source.
 
@@ -282,25 +379,70 @@ files and functions found in the retrieved code.
 """
 
         return [
-            SystemMessage(content=self.system_prompt),
-            HumanMessage(content=user_prompt),
+            SystemMessage(
+                content=self.system_prompt
+            ),
+            HumanMessage(
+                content=user_prompt
+            ),
         ]
 
+    # ---------------------------------------------------------
+    # TOKEN USAGE
+    # ---------------------------------------------------------
+
     def _record_usage(self, response) -> None:
-        """Record token usage from a model response."""
+        """Record token usage from a model response safely."""
 
         if self.usage_tracker is None:
             return
 
-        usage = extract_token_usage(response)
-
-        if not usage:
+        try:
+            usage = extract_token_usage(response)
+        except Exception:
+            # Usage information should never break a valid answer.
             return
 
-        self.usage_tracker.record(
-            input_tokens=usage["input_tokens"],
-            output_tokens=usage["output_tokens"],
-        )
+        if usage is None:
+            return
+
+        input_tokens = 0
+        output_tokens = 0
+
+        # Current monitoring.py returns:
+        # (input_tokens, output_tokens)
+        if isinstance(usage, tuple):
+
+            if len(usage) >= 2:
+                input_tokens = usage[0] or 0
+                output_tokens = usage[1] or 0
+
+        # Also support dictionary-shaped usage information.
+        elif isinstance(usage, dict):
+
+            input_tokens = (
+                usage.get("input_tokens")
+                or usage.get("prompt_tokens")
+                or 0
+            )
+
+            output_tokens = (
+                usage.get("output_tokens")
+                or usage.get("completion_tokens")
+                or 0
+            )
+
+        try:
+            self.usage_tracker.record(
+                input_tokens=int(input_tokens),
+                output_tokens=int(output_tokens),
+            )
+        except Exception:
+            pass
+
+    # ---------------------------------------------------------
+    # RESPONSE TEXT
+    # ---------------------------------------------------------
 
     @staticmethod
     def _extract_response_text(response) -> str:
@@ -316,13 +458,16 @@ files and functions found in the retrieved code.
             return content
 
         if isinstance(content, list):
+
             parts = []
 
             for item in content:
+
                 if isinstance(item, str):
                     parts.append(item)
 
                 elif isinstance(item, dict):
+
                     text = item.get("text")
 
                     if text:
@@ -331,6 +476,10 @@ files and functions found in the retrieved code.
             return "".join(parts)
 
         return str(content)
+
+    # ---------------------------------------------------------
+    # PROMPT LOADING
+    # ---------------------------------------------------------
 
     @staticmethod
     def _load_prompt(filename: str) -> str:
