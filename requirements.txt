@@ -9,7 +9,6 @@ faiss-cpu
 sentence-transformers
 transformers
 torch
-streamlit
 python-dotenv
 tiktoken
 langsmith

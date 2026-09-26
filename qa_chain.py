@@ -6,6 +6,7 @@ from typing import Iterator
 import os
 
 from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_groq import ChatGroq
 
 from memory import ConversationMemory
@@ -79,9 +80,9 @@ class CodeQAChain:
 
         previous_user = recent_turn.user.strip()
 
-        # Keep previous assistant context bounded so that very long
-        # answers do not unnecessarily expand the retrieval query.
-        previous_assistant = recent_turn.assistant.strip()[:2000]
+        previous_assistant = (
+            recent_turn.assistant.strip()[:2000]
+        )
 
         return (
             "Previous user question:\n"
@@ -244,10 +245,18 @@ GROUNDING RULES:
    and symbols actually present in the retrieved code.
 """
 
-        messages = [
-            SystemMessage(content=prompt),
-            HumanMessage(content=user_prompt),
-        ]
+        # Explicit LangChain ChatPromptTemplate usage.
+        prompt_template = ChatPromptTemplate.from_messages(
+            [
+                ("system", "{system_prompt}"),
+                ("human", "{user_prompt}"),
+            ]
+        )
+
+        messages = prompt_template.format_messages(
+            system_prompt=prompt,
+            user_prompt=user_prompt,
+        )
 
         response = self.llm.invoke(messages)
 
@@ -315,8 +324,8 @@ GROUNDING RULES:
                 collected.append(text)
                 yield text
 
-        # Some LangChain/Groq versions expose usage only on the
-        # final streamed chunk.
+        # Some LangChain/Groq versions expose usage only
+        # on the final streamed chunk.
         if last_chunk is not None:
             self._record_usage(last_chunk)
 
@@ -339,7 +348,10 @@ GROUNDING RULES:
         query: str,
         context: str,
     ):
-        """Build the LLM message sequence."""
+        """
+        Build the LLM message sequence using
+        LangChain ChatPromptTemplate.
+        """
 
         history = self.memory.get_formatted_history()
 
@@ -378,14 +390,18 @@ When explaining an execution flow, identify the actual
 files and functions found in the retrieved code.
 """
 
-        return [
-            SystemMessage(
-                content=self.system_prompt
-            ),
-            HumanMessage(
-                content=user_prompt
-            ),
-        ]
+        # LangChain ChatPromptTemplate is explicitly used here.
+        prompt_template = ChatPromptTemplate.from_messages(
+            [
+                ("system", "{system_prompt}"),
+                ("human", "{user_prompt}"),
+            ]
+        )
+
+        return prompt_template.format_messages(
+            system_prompt=self.system_prompt,
+            user_prompt=user_prompt,
+        )
 
     # ---------------------------------------------------------
     # TOKEN USAGE
@@ -467,7 +483,6 @@ files and functions found in the retrieved code.
                     parts.append(item)
 
                 elif isinstance(item, dict):
-
                     text = item.get("text")
 
                     if text:

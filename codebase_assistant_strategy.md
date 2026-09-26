@@ -499,7 +499,7 @@ Source references provide traceability between an answer and the indexed project
 
 The assistant uses the Groq chat model through LangChain.
 
-For normal chat questions, response tokens are streamed to the Streamlit interface.
+For normal chat questions, response tokens are streamed to the terminal through the Python CLI interface.
 
 This provides incremental output instead of waiting for the complete response before displaying anything.
 
