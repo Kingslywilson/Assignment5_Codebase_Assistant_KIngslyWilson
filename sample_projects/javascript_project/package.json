@@ -1,0 +1,6 @@
+{
+    "name": "sample-codebase",
+    "version": "1.0.0",
+    "description": "Sample JavaScript project for the Codebase Assistant",
+    "main": "src/index.js"
+}

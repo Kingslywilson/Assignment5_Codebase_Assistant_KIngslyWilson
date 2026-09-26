@@ -1,0 +1,34 @@
+# Environment
+.env
+
+# Virtual environments
+venv/
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Testing/cache
+.pytest_cache/
+.coverage
+coverage/
+
+# IDE
+.vscode/
+.idea/
+
+# Build
+build/
+dist/
+
+# Node
+node_modules/
+
+# Generated/vector data
+*.faiss
+*.pkl
+
+# OS
+.DS_Store
+Thumbs.db
